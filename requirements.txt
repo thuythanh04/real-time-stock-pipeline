@@ -1,0 +1,7 @@
+finnhub-python
+pyspark
+kafka-python
+psycopg2-binary
+websockets
+websocket-client
+avro-python3

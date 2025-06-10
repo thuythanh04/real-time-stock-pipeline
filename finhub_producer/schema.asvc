@@ -1,0 +1,35 @@
+{
+  "type": "record",
+  "name": "FinnhubMessage",
+  "namespace": "com.finnhub",
+  "doc": "Wrapper schema for Finnhub WebSocket message",
+  "fields": [
+    {
+      "name": "type",
+      "type": "string",
+      "doc": "Message type (e.g. 'trade')"
+    },
+    {
+      "name": "data",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "StockTrade",
+          "fields": [
+            { "name": "s", "type": "string", "doc": "Stock or asset symbol" },
+            { "name": "p", "type": "double", "doc": "Last traded price" },
+            { "name": "t", "type": "long", "doc": "Timestamp in UNIX ms" },
+            { "name": "v", "type": "double", "doc": "Trade volume" },
+            {
+              "name": "c",
+              "type": ["null", { "type": "array", "items": "string" }],
+              "default": null,
+              "doc": "List of trade condition codes"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

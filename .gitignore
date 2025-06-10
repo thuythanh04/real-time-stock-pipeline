@@ -1,0 +1,4 @@
+*.env
+*.log
+.venv
+config.json
