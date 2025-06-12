@@ -53,6 +53,9 @@ class FinnhubKafkaProducer:
         print(">> Raw WebSocket message:", message)
         try:
             data = json.loads(message)
+            if "data" not in data:
+                print(">> No trade data, skipping.")
+                return
             
             # Wrap and encode the message
             avro_message = self.avro_encode({
