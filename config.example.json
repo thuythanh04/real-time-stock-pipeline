@@ -1,7 +1,10 @@
 {
   "finnhub_token": "YOUR_TOKEN_HERE",
-  "symbols": ["AAPL", "AMZN", "BINANCE:BTCUSDT", "IC MARKETS:1"],
+  "symbols": ["BINANCE:BTCUSDT", "IC MARKETS:1"],
   "schema_path": "finhub_producer/schema.asvc",
   "kafka_bootstrap_servers": "localhost:9094",
-  "kafka_topic": "stock-ticks"
+  "kafka_topic": "stock-ticks",
+  "db_url": "jdbc:postgresql://localhost:5432/stocks",
+  "db_user": "yourusername",
+  "db_password": "yourpassword"
 }
