@@ -23,35 +23,33 @@ spark = SparkSession.builder\
 
 spark.sparkContext.setLogLevel("WARN")
 
+# Load Avro schema from file
 with open(AVRO_SCHEMA_PATH, "r") as f:
-  avro_schema_str = f.read()
-
+  avro_schema = f.read()
 
 # Read from Kafka
-raw_df = spark.readStream\
+kafka_df = spark.readStream\
         .format("kafka")\
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP) \
         .option("subscribe", KAFKA_TOPIC) \
         .option("failOnDataLoss", "false") \
         .load()
 
+# Decode Avro
+decoded_df = kafka_df.select(from_avro(col("value"), avro_schema).alias("data"))
 
-# Decode Avro payload
-parsed_df = raw_df.select(
-    from_avro(col("value"), avro_schema_str).alias("parsed")
-).select(
-    explode(col("parsed.data")).alias("tick")
-)
+# Explode array of trades
+exploded_df = decoded_df.selectExpr("data.type", "explode(data.data) as tick")
 
 # Extract and transform fields
-ticks_df = parsed_df.select(
+ticks_df = exploded_df.select(
     col("tick.s").alias("symbol"),
     col("tick.p").alias("price"),
     (col("tick.t") / 1000).cast("timestamp").alias("event_time"),
     col("tick.v").alias("volume")
 )
 
-# OHLCV aggregation
+# Aggregate to OHLCV format with 1-minute window and watermark
 ohlcv_df = ticks_df \
     .withWatermark("event_time", "1 minute") \
     .groupBy(
@@ -68,7 +66,7 @@ ohlcv_df = ticks_df \
         "symbol", "open", "high", "low", "close", "volume"
     )
 
-# Function to extract host, port, and database from JDBC URL for psycopg2
+# Helper function to parse JDBC URL to extract host, port, and database name
 def parse_jdbc_url(jdbc_url):
     match = re.match(r"jdbc:postgresql://([^:]+):(\d+)/([^?]+)", jdbc_url)
     if match:
@@ -85,26 +83,18 @@ except ValueError as e:
     print(f"Failed to parse DB_URL: {e}")
     exit(1)
 
-
 # Function to write OHLCV data to PostgreSQL with UPSERT logic
 def write_ohlcv_to_pg(df, epoch_id):
-    # Check if the DataFrame is empty to avoid unnecessary database operations
     if df.isEmpty():
         print(f"Batch {epoch_id}: DataFrame is empty, skipping write to DB.")
         return
 
     print(f"Batch {epoch_id}: Processing {df.count()} records for UPSERT...")
 
-    # Convert Spark DataFrame to Pandas DataFrame to iterate over rows easily
-    # This collects data to the driver, which can be a bottleneck for very large batches.
-    # For production, consider using more advanced Spark-native JDBC upsert solutions
-    # if batch sizes are consistently very large.
     pandas_df = df.toPandas()
 
     conn = None
     try:
-        # Establish a new PostgreSQL connection for each batch
-        # This ensures transaction isolation for each micro-batch
         conn = psycopg2.connect(
             host=DB_HOST,
             port=DB_PORT,
@@ -113,21 +103,20 @@ def write_ohlcv_to_pg(df, epoch_id):
             password=DB_PASSWORD
         )
         cur = conn.cursor()
+        
+        # UPSERT logic using ON CONFLICT (PostgreSQL-specific)
+        upsert_sql = """
+            INSERT INTO ohlcv_data (timestamp, symbol, open, high, low, close, volume)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (timestamp, symbol) DO UPDATE SET
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume;
+        """
 
-        # Iterate over each row in the Pandas DataFrame
-        for index, row in pandas_df.iterrows():
-            # SQL UPSERT statement for PostgreSQL
-            # It assumes the 'ohlcv_data' table has a UNIQUE constraint on (timestamp, symbol)
-            upsert_sql = """
-                INSERT INTO ohlcv_data (timestamp, symbol, open, high, low, close, volume)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (timestamp, symbol) DO UPDATE SET
-                    open = EXCLUDED.open,
-                    high = EXCLUDED.high,
-                    low = EXCLUDED.low,
-                    close = EXCLUDED.close,
-                    volume = EXCLUDED.volume;
-            """
+        for _, row in pandas_df.iterrows():
             cur.execute(
                 upsert_sql,
                 (
@@ -140,12 +129,12 @@ def write_ohlcv_to_pg(df, epoch_id):
                     row["volume"]
                 )
             )
-        conn.commit() # Commit all changes for the batch
+        conn.commit()
         print(f"Batch {epoch_id}: Successfully upserted {len(pandas_df)} records.")
 
     except psycopg2.Error as e:
         if conn:
-            conn.rollback() # Rollback on error
+            conn.rollback()
         print(f"Batch {epoch_id}: Database error during UPSERT: {e}")
     except Exception as e:
         print(f"Batch {epoch_id}: An unexpected error occurred: {e}")
